@@ -1,10 +1,10 @@
 # Pop RAG Search
 
-<p align="center">
-  <img src="assets/sabrina.png" alt="Pop RAG Search cover" width="420">
-</p>
+<img src="assets/sabrina.png" alt="Pop RAG Search cover" width="180" align="left">
 
 FYI: This project began as part of a university course in Information Retrieval. I later prepared it for public deployment as a portfolio project.
+
+<br clear="left">
 
 ## How it works
 1. The Streamlit app retrieves relevant lyric chunks from a local Chroma index
