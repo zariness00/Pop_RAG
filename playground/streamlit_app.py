@@ -1,142 +1,114 @@
+"""Pop song retrieval and grounded answer generation."""
+
 import os
-import streamlit as st
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import chromadb
-from dotenv import load_dotenv
-from openai import OpenAI
-import re
+import streamlit as st
+from chromadb.utils.embedding_functions import ONNXMiniLM_L6_V2
+from openai import APIStatusError, OpenAI, RateLimitError
+
+from playground.rag_answer import generate_answer
+from playground.song_search import search_songs
 
 
-st.title("POP RAG Search Engine")
-
-
-load_dotenv("api_key.env")
-api_key = os.getenv("OPENAI_API_KEY")
-
-client_openai = OpenAI(api_key=api_key)
-
-
-MAIN_PATH      = os.getenv("COLLECTION_PATH")
+COLLECTION_PATH = Path(os.getenv("COLLECTION_PATH", ROOT / "my_collection_1")).resolve()
 COLLECTION_NAME = "my_collection_1"
-
-client     = chromadb.PersistentClient(path=MAIN_PATH)
-collection = client.get_or_create_collection(name=COLLECTION_NAME, metadata = {"hnsw:space": "cosine"})
-
-def get_completion(prompt):
-    response = client_openai.chat.completions.create(
-        model= "gpt-4",
-        messages=[
-            {"role":"system", "content": "You're a helpful assistant who retrieves information from external sources and presents them to the user. Provide an overview, then list of recommended songs and each song is followed the example citation. Pay attention to the n_results "},
-            {"role": "user", "content": prompt},
-        ]
-    )
-    return response.choices[0].message.content
-
-def populate_rag_query(query, n_results=1):
-    search_results = collection.query(query_texts=[query], n_results=n_results)
-    result_str = ""
-    for idx, result in enumerate(search_results["documents"][0]):
-        metadata = search_results["metadatas"][0][idx]
-        formatted_result = f"""<SEARCH RESULT>
-        <DOCUMENT>{result}</DOCUMENT>
-        <METADATA>
-        <ARTIST>{metadata.get('artist', '')}</ARTIST>
-        <TITLE>{metadata.get('song_title', '')}</TITLE>
-        <ALBUM>{metadata.get('song_album', '')}</ALBUM>
-        <YEAR>{metadata.get('song_year', '')}</YEAR>
-        <CHUNK_IDX>{metadata.get('chunk_index', '')}</CHUNK_IDX>
-        </METADATA>
-        </SEARCH RESULT>"""
-        result_str += formatted_result
-    return result_str
-
-def make_rag_prompt(query, results):
-    return f"""<INSTRUCTIONS>
-    <EXAMPLE CITATION>
-    Answer to the user query in your own words, drawn from the search results. 
-    AND - "Direct quote from source material backing up the claim" - [Source: Song Title, Artist, Album, Year]
-    </EXAMPLE CITATION>
-    When you finish outlining, please output a **numbered list** of the recommended songs
-    </INSTRUCTIONS>
-    <USER QUERY>
-    {query}
-    </USER QUERY>
-    <SEARCH RESULTS>
-    {results}
-    </SEARCH RESULTS>
-
-    Your answer:"""
-def get_prev_next_chunks(chunk_index: int):
-    
-    prev_chunk = collection.get(where={"chunk_index": {"$eq": chunk_index - 1}})
-    next_chunk = collection.get(where={"chunk_index": {"$eq": chunk_index + 1}})
-    return prev_chunk, next_chunk
-
-def expanded_search_results(original_chunk):
-    original_chunk_idx = original_chunk["metadatas"][0]["chunk_index"]
-    prev_chunk, next_chunk = get_prev_next_chunks(original_chunk_idx)
-    result_str = ""
-    for chunk in [prev_chunk, original_chunk, next_chunk]:
-        if len(chunk["metadatas"])>0:
-            meta= chunk["metadatas"][0]
-            formatted_result = f"""<SEARCH RESULT>
-            <DOCUMENT>{chunk["documents"][0]}</DOCUMENT>
-            <METADATA>
-            <ARTIST>{meta.get("artist", "")}</ARTIST>
-            <TITLE>{meta.get("song_title", "")}</TITLE>
-            <ALBUM>{meta.get("song_album", "")}</ALBUM>
-            <YEAR>{meta.get("song_year", "")}</YEAR>
-            <CHUNK_IDX>{meta.get("chunk_index", "")}</CHUNK_IDX>
-            </METADATA>
-            </SEARCH RESULT>"""
-            result_str += formatted_result
-    return result_str
-
-def make_decoupled_rag_prompt(query, n_results=1):
-    search_results = collection.query(
-        query_texts=[query],
-        n_results=n_results,
-        include=["documents","metadatas"]
-        )
-    
-    total_result_str = ""
-    for doc_text, metadata in zip(
-        search_results["documents"][0],
-        search_results["metadatas"][0]
-    ):
-        chunk = {
-            "documents": [doc_text],
-            "metadatas": [metadata]
-        }
-
-        expanded_result = expanded_search_results(chunk)
-        total_result_str += expanded_result
-        rag_prompt = make_rag_prompt(query, total_result_str)
-
-    return rag_prompt
+MISTRAL_URL = "https://api.mistral.ai/v1"
+MISTRAL_MODEL = "ministral-8b-2512"
 
 
+@st.cache_resource
+def load_collection():
+    client = chromadb.PersistentClient(path=str(COLLECTION_PATH))
+    return client.get_collection(name=COLLECTION_NAME)
 
 
+@st.cache_resource
+def load_embedder():
+    return ONNXMiniLM_L6_V2(preferred_providers=["CPUExecutionProvider"])
 
-user_question = st.text_input("Enter your query:", placeholder="e.g. songs about a painful breakup")
-n_results     = st.slider("Number of suggestions you would like to receive:", min_value=1, max_value=10, value=3)
 
-if st.button("Search and Answer"):
-    if not user_question.strip():
-        st.warning("Please enter a question before searching.")
+st.set_page_config(page_title="Pop RAG Search", page_icon="🎵")
+st.title("Pop RAG Search")
+st.write("Describe a mood or theme. The app finds matching lyric chunks, then uses them to recommend songs.")
+
+query = st.text_input("What kind of song are you looking for?", placeholder="e.g. songs about a painful breakup")
+limit = st.slider("Number of songs", min_value=1, max_value=10, value=3)
+mistral_key = os.getenv("MISTRAL_API_KEY", "").strip()
+if not mistral_key:
+    try:
+        mistral_key = str(st.secrets.get("MISTRAL_API_KEY") or "").strip()
+    except FileNotFoundError:
+        pass
+if mistral_key:
+    st.caption("Answers are generated from the retrieved lyrics with Mistral.")
+else:
+    st.caption("Answer generation is temporarily unavailable; retrieval still works.")
+
+if st.button("Search and answer", type="primary"):
+    st.session_state["songs"] = []
+    st.session_state["answer"] = None
+    st.session_state["search_error"] = False
+    if not query.strip():
+        st.warning("Enter a search phrase first.")
     else:
-        rag_prompt = make_decoupled_rag_prompt(user_question, n_results)
-        rag_answer = get_completion(rag_prompt)
-        st.subheader("Answer:")
-        st.write(rag_answer)
+        try:
+            with st.spinner("Finding matching songs…"):
+                st.session_state["songs"] = search_songs(
+                    load_collection(), query, limit, embedder=load_embedder()
+                )
+        except Exception:
+            st.session_state["search_error"] = True
+            st.error("Search is temporarily unavailable. Please try again later.")
 
-        # st.subheader("Here are detailed answer:")
-        # raw = rag_prompt.split("<SEARCH RESULTS>")[-1].strip()
-        # for idx, block in enumerate(raw.split("<SEARCH RESULT>")[1:], start=1):
-        #     match = re.search(r"<CHUNK_IDX>(\d+)</CHUNK_IDX>", block)
-        #     if match and int(match.group(1)) in central_indices:
-        #         st.code("<SEARCH RESULT>" + block)
-        #         st.write("---")
-        #     # st.markdown(f"**Block {idx}:**")
-        #     # st.code("<SEARCH RESULT>" + block)  
-        #     # st.write("---")
+        if st.session_state["songs"]:
+            if mistral_key:
+                try:
+                    with st.spinner("Writing a grounded answer…"):
+                        client = OpenAI(
+                            api_key=mistral_key,
+                            base_url=MISTRAL_URL,
+                            timeout=20,
+                            max_retries=0,
+                        )
+                        st.session_state["answer"] = generate_answer(
+                            client,
+                            query.strip(),
+                            st.session_state["songs"],
+                            model=MISTRAL_MODEL,
+                        )
+                except RateLimitError:
+                    st.error("Mistral is busy or its usage limit was reached. Please try again later.")
+                except APIStatusError:
+                    st.error("Mistral could not generate an answer. Please try again later.")
+                except Exception:
+                    st.error("Answer generation failed. Please try again later.")
+            else:
+                st.info("Answer generation is temporarily unavailable. Retrieved evidence is shown below.")
+
+answer = st.session_state.get("answer")
+if answer:
+    st.subheader("Answer")
+    st.write(answer["overview"])
+    for number, recommendation in enumerate(answer["recommendations"], start=1):
+        song = recommendation["song"]
+        st.markdown(f"**{number}. {song['title']} — {song['artist']}**")
+        st.write(recommendation["reason"])
+        citation = ", ".join(part for part in (
+            song["title"], song["artist"], song["album"], song["year"]
+        ) if part)
+        st.caption(f"Source: {citation}")
+
+songs = st.session_state.get("songs", [])
+if songs:
+    with st.expander("Retrieved evidence"):
+        for number, song in enumerate(songs, start=1):
+            st.write(f"{number}. {song['title']} — {song['artist']}: {song['excerpt']}")
+elif "songs" in st.session_state and not st.session_state["search_error"] and query.strip():
+    st.info("No matching songs found. Try another phrase.")
