@@ -1,24 +1,26 @@
 import chromadb
 from openai import OpenAI
 import os
+from pathlib import Path
 from dotenv import load_dotenv, find_dotenv
 
 load_dotenv("api_key.env")
-collection_path = os.getenv("COLLECTION_PATH")
+collection_path = os.getenv("COLLECTION_PATH", str(Path(__file__).resolve().parents[1] / "my_collection_1"))
 COLLECTION_NAME  = "my_collection_1"
-
-api_key = os.getenv("OPENAI_API_KEY")
-client_openai = OpenAI(api_key=api_key) 
 
 client     = chromadb.PersistentClient(path= collection_path)
 collection = client.get_or_create_collection(name=COLLECTION_NAME, metadata = {"hnsw:space": "cosine"})
 def get_completion(prompt):
-    response = client_openai.chat.completions.create(
-        model= "gpt-4",
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise RuntimeError("Set OPENAI_API_KEY to use local generation")
+    response = OpenAI(api_key=api_key, timeout=20, max_retries=0).chat.completions.create(
+        model= "gpt-4o-mini",
         messages=[
             {"role":"system", "content": "You're a helpful assistant who retrieves information from external sources and presents them to the user."},
             {"role": "user", "content": prompt},
-        ]
+        ],
+        max_tokens=350,
     )
     return response.choices[0].message.content
 
@@ -61,9 +63,6 @@ def make_rag_prompt(query, results):
 # all_ids  = all_data["ids"]                    # list of every ID in the collection
 # print(f"Total IDs: {len(all_ids)}")
 # print(all_ids[1900:1967])
-print(collection.get('Billie_Eilish_10'))
-print(collection.get('Billie_Eilish_11'))
-print(collection.get('Billie_Eilish_12'))
 
 
 """Decoupling-- 
@@ -117,6 +116,6 @@ def make_decoupled_rag_prompt(query, n_results=1):
         rag_prompt = make_rag_prompt(query, total_result_str)
     return rag_prompt
 
-prompt_1 = make_decoupled_rag_prompt("song about being brokenhearted", n_results =3)
-rag_completion_1 = get_completion(prompt_1)
-print(rag_completion_1)
+if __name__ == "__main__":
+    prompt_1 = make_decoupled_rag_prompt("song about being brokenhearted", n_results=3)
+    print(get_completion(prompt_1))
