@@ -1,56 +1,64 @@
+"""Normalize source CSVs and remove alternate or combined song entries."""
+
 import os
-import glob
-import pandas as pd
-from dotenv import load_dotenv
 import re
+from pathlib import Path
 
-load_dotenv("playground/genius_api.env")
-csv_folder = os.getenv("CSV_FOLDER")
+import pandas as pd
 
 
-keywords = [
-    "Remix",
+ROOT = Path(__file__).resolve().parents[1]
+CSV_FOLDER = Path(os.getenv("CSV_FOLDER", ROOT / "datasets")).resolve()
+OUTPUT_FOLDER = CSV_FOLDER / "Cleaned_csvs"
+EXCLUDED_TITLE_TERMS = (
     "remix",
-    "Deluxe",
     "deluxe",
-    "Live",
     "live",
-    "Acoustic",
     "acoustic",
-    "Demo",
-    "Demo"
+    "demo",
     "version",
-    "Version",
-    "Acapella",
     "acapella",
-    "Instrumental",
     "instrumental",
     "edit",
-    "Edit",
-    "Radio Edit",
     "radio edit",
-    "Radio edit",
-    "Mix",
     "mix",
+    "mashup",
+    "medley",
     "cover",
-    "Cover"
-    ]
-escaped = [re.escape(k) for k in keywords]
-pattern = rf"({'|'.join(escaped)})"
-
-output_folder = os.path.join(csv_folder, "Cleaned_csvs")
-os.makedirs(output_folder, exist_ok=True)
+)
+TITLE_PATTERN = re.compile(
+    "|".join(re.escape(term) for term in EXCLUDED_TITLE_TERMS),
+    re.IGNORECASE,
+)
 
 
-for csv_path in glob.glob(os.path.join(csv_folder, "*.csv")):
-    df = pd.read_csv(csv_path)
-    mask = df["Title"].str.contains(pattern, regex=True, na=False)
-    cleaned_df = df[~mask].copy()
-    out_path = os.path.join(output_folder, os.path.basename(csv_path))
-    cleaned_df.to_csv(out_path, index=False)
-    print("Checkpoint!!!")
-    print(f"Processed {os.path.basename(csv_path)} → {os.path.basename(out_path)}")
+def clean_dataset(csv_path):
+    """Return normalized canonical-song rows from one source CSV."""
+    frame = pd.read_csv(csv_path)
+    frame = frame.rename(columns={"tArtist": "Artist"})
+    required = {"Artist", "Title", "Lyric"}
+    if not required.issubset(frame.columns):
+        missing = ", ".join(sorted(required - set(frame.columns)))
+        raise ValueError(f"Missing required columns: {missing}")
+
+    titles = frame["Title"].fillna("").astype(str)
+    alternate_version = titles.str.contains(TITLE_PATTERN, na=False)
+    multi_song_entry = titles.str.count("/") >= 2
+    attributed_to_another_artist = titles.str.contains(r"\[[^\]]+\]", regex=True)
+    complete = frame[["Artist", "Title", "Lyric"]].notna().all(axis=1)
+    return frame[
+        complete & ~alternate_version & ~multi_song_entry & ~attributed_to_another_artist
+    ].copy()
 
 
+def main():
+    OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
+    for csv_path in sorted(CSV_FOLDER.glob("*.csv")):
+        cleaned = clean_dataset(csv_path)
+        output_path = OUTPUT_FOLDER / csv_path.name
+        cleaned.to_csv(output_path, index=False)
+        print(f"Processed {csv_path.name}: kept {len(cleaned)} rows")
 
-    
+
+if __name__ == "__main__":
+    main()

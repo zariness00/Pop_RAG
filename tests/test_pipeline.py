@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from playground.chunking_indexing_all import build_index_records, split_lyrics_from_csv
+from playground.clean_datasets import clean_dataset
 from playground.rag_answer import generate_answer
 from playground.song_search import search_songs
 
@@ -56,6 +57,17 @@ def test_preprocessing_skips_duplicate_rows(tmp_path):
     song = {"Artist": "A", "Title": "Song", "Lyric": "some words"}
     path = write_csv(tmp_path, [song, song])
     assert len(split_lyrics_from_csv(path)) == 1
+
+
+def test_cleaning_repairs_artist_header_and_removes_combined_or_attributed_songs(tmp_path):
+    path = write_csv(tmp_path, [
+        {"tArtist": "Ariana Grande", "Title": "Valid Song", "Lyric": "words"},
+        {"tArtist": "Ariana Grande", "Title": "One/Two/Three", "Lyric": "words"},
+        {"tArtist": "Ariana Grande", "Title": "Song [Another Artist]", "Lyric": "words"},
+    ], fieldnames=("tArtist", "Title", "Lyric"))
+    cleaned = clean_dataset(path)
+    assert list(cleaned["Artist"]) == ["Ariana Grande"]
+    assert list(cleaned["Title"]) == ["Valid Song"]
 
 
 def test_index_records_have_stable_distinct_ids(tmp_path):
