@@ -1,12 +1,12 @@
 # Pop RAG Search
 
-<img src="assets/sabrina.png" alt="Pop RAG Search cover" width="180" align="left">
 ### [🎵 Try the live app](https://pop-rag.streamlit.app/)
-
+<img src="assets/sabrina.png" alt="Pop RAG Search cover" width="180" align="left">
+FYI: This project began as part of a university course in Information Retrieval. I later prepared it for public deployment as a portfolio project.
 
 <br clear="left">
 
-FYI: This project began as part of a university course in Information Retrieval. I later prepared it for public deployment as a portfolio project.
+
 ## How it works
 1. The Streamlit app retrieves relevant lyric chunks from a local Chroma index
 2. Mistral uses the retrieved evidence to generate structured song recommendations with citations
