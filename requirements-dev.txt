@@ -1,0 +1,4 @@
+-r requirements.txt
+pandas==2.2.3
+langchain==0.3.24
+pytest>=8,<9
