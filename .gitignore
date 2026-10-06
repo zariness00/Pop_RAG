@@ -14,3 +14,8 @@ archive
 genius_api.env
 
 lyrics
+
+*.env
+.streamlit/secrets.toml
+.pytest_cache/
+my_collection_rebuilt/
